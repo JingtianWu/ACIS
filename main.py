@@ -18,6 +18,7 @@ from extract_tests import (
 from identify_files_to_implement import (
     classify_files,
     display_results as display_file_results,
+    generate_dependency_graph,
 )
 from rich.console import Console
 from rich.panel import Panel
@@ -45,6 +46,46 @@ def extract_summary(output: str) -> str:
             break
     return summary_line
 
+def determine_implementation_order(functions_to_implement):
+    """Determine the order of functions to implement."""
+    functions_by_file = defaultdict(list)
+    for func_info in functions_to_implement:
+        functions_by_file[func_info['file']].append(func_info)
+    return list(functions_by_file.values())
+
+def map_source_to_test_files(source_files, library_path):
+    """Map source files to their corresponding test files."""
+    test_identifiers_to_run = []
+    for source_file in source_files:
+        source_filename = source_file.name
+        test_filename = 'test_' + source_filename
+        test_file_path = library_path / 'tests' / test_filename
+        if test_file_path.exists():
+            test_identifiers_to_run.extend(parse_test_identifiers(test_file_path, library_path))
+    return test_identifiers_to_run
+
+def parse_test_identifiers(test_file_path, library_path):
+    """Parse a test file to extract test identifiers."""
+    try:
+        with test_file_path.open('r', encoding='utf-8') as f:
+            test_content = f.read()
+        test_tree = ast.parse(test_content, filename=str(test_file_path))
+        test_identifiers = []
+        for node in ast.walk(test_tree):
+            if isinstance(node, ast.ClassDef):
+                class_name = node.name
+                for child in node.body:
+                    if isinstance(child, ast.FunctionDef) and child.name.startswith('test_'):
+                        test_identifier = f"{test_file_path.relative_to(library_path)}::{class_name}::{child.name}"
+                        test_identifiers.append(test_identifier)
+            elif isinstance(node, ast.FunctionDef):
+                if node.name.startswith('test_'):
+                    test_identifier = f"{test_file_path.relative_to(library_path)}::{node.name}"
+                    test_identifiers.append(test_identifier)
+        return test_identifiers
+    except Exception as e:
+        console.print(f"[red]Failed to parse test file {test_file_path}: {e}[/red]")
+        return []
 
 def main():
     base_dir = Path('.').resolve()
@@ -53,33 +94,18 @@ def main():
     console.print("[bold blue]Step 1: Extracting test cases and files to implement[/bold blue]")
 
     # Define directories to exclude
-    exclude_dirs = {".venv", "venv", "env", ".env", "site-packages"}
+    # exclude_dirs = {".venv", "venv", "env", ".env", "site-packages"}
 
-    libraries = find_libraries(base_dir, exclude_dirs=exclude_dirs)
+    libraries = find_libraries(base_dir)
     if not libraries:
         console.print("[red]No libraries found.[/red]")
         sys.exit(1)
 
     # Extract test cases
-    test_classification = classify_tests(
-        libraries,
-        exclude_files=set([
-            "conftest.py", "setup.py", "setup.cfg", "requirements.txt",
-            "requirements.extra.txt", "README.md"
-        ]),
-        exclude_patterns=set(["*.egg-info", "build", "dist", "__pycache__", "venv", ".venv", "env", ".env"]),
-    )
+    test_classification = classify_tests(libraries)
 
     # Identify files needing implementation
-    file_classification = classify_files(
-        libraries,
-        exclude_files=set([
-            "__init__.py", "__main__.py", "conftest.py",
-            "setup.py", "setup.cfg", "requirements.txt",
-            "requirements.extra.txt", "README.md"
-        ]),
-        exclude_patterns=set(["*.egg-info", "build", "dist", "__pycache__", "venv", ".venv", "env", ".env"]),
-    )
+    file_classification = classify_files(libraries)
 
     # Display results
     console.print("[bold green]Extracted Test Cases:[/bold green]")
@@ -89,41 +115,12 @@ def main():
     display_file_results(file_classification)
 
     # Step 2: Generate dependency graph (simplified)
-    console.print("[bold blue]Step 2: Generating dependency graph[/bold blue]")
-
-    functions_to_implement = []
-
-    for lib in libraries:
-        lib_name = lib.name
-        if lib_name not in file_classification:
-            continue
-        for file_relative_path in file_classification[lib_name]:
-            file_path = lib / file_relative_path
-            # Parse the file to get function names
-            try:
-                with file_path.open('r', encoding='utf-8') as f:
-                    file_content = f.read()
-                tree = ast.parse(file_content, filename=str(file_path))
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.FunctionDef):
-                        functions_to_implement.append({
-                            'library': lib_name,
-                            'file': file_path,
-                            'function': node.name,
-                            'dependencies': []  # Simplified for now
-                        })
-            except Exception as e:
-                console.print(f"[red]Failed to parse file {file_path}: {e}[/red]")
-                continue
+    console.print("[bold blue]Step 2: Generating dependency graph[/bold blue]")    
+    functions_to_implement = generate_dependency_graph(libraries, file_classification)
 
     # Step 3: Determine implementation order
     console.print("[bold blue]Step 3: Determining implementation order[/bold blue]")
-
-    functions_by_file = defaultdict(list)
-    for func_info in functions_to_implement:
-        functions_by_file[func_info['file']].append(func_info)
-
-    subsets = list(functions_by_file.values())
+    subsets = determine_implementation_order(functions_to_implement)
 
     # Step 4: Iteratively implement functions
     console.print("[bold blue]Step 4: Iteratively implementing functions[/bold blue]")
@@ -140,35 +137,8 @@ def main():
 
         # Determine the test identifiers to run for this subset
         source_files = set(func_info['file'] for func_info in subset)
-        test_identifiers_to_run = []
-
-        for source_file in source_files:
-            # Map source file to test file
-            source_filename = source_file.name
-            test_filename = 'test_' + source_filename
-            test_file_path = library_path / 'tests' / test_filename
-            if test_file_path.exists():
-                # Extract test functions within classes and standalone functions
-                try:
-                    with test_file_path.open('r', encoding='utf-8') as f:
-                        test_content = f.read()
-                    test_tree = ast.parse(test_content, filename=str(test_file_path))
-                except Exception as e:
-                    console.print(f"[red]Failed to parse test file {test_file_path}: {e}[/red]")
-                    continue
-
-                for node in ast.walk(test_tree):
-                    if isinstance(node, ast.ClassDef):
-                        class_name = node.name
-                        for child in node.body:
-                            if isinstance(child, ast.FunctionDef) and child.name.startswith('test_'):
-                                test_identifier = f"{test_file_path.relative_to(library_path)}::{class_name}::{child.name}"
-                                test_identifiers_to_run.append(test_identifier)
-                    elif isinstance(node, ast.FunctionDef):
-                        if node.name.startswith('test_'):
-                            test_identifier = f"{test_file_path.relative_to(library_path)}::{node.name}"
-                            test_identifiers_to_run.append(test_identifier)
-
+        test_identifiers_to_run = map_source_to_test_files(source_files, library_path)
+        
         if not test_identifiers_to_run:
             console.print(f"[yellow]No tests found for subset {subset_index + 1}. Skipping test execution.[/yellow]")
             success = True

@@ -172,7 +172,7 @@ def get_target_files(library_dir: Path, exclude_files: Set[str], exclude_pattern
     return target_files
 
 
-def classify_files(libraries: List[Path], exclude_files: Set[str], exclude_patterns: Set[str], use_concurrency: bool = True, max_workers: int = None) -> Dict[str, List[str]]:
+def classify_files(libraries: List[Path], exclude_files: Set[str]=None, exclude_patterns: Set[str]=None, use_concurrency: bool = True, max_workers: int = None) -> Dict[str, List[str]]:
     """
     Classifies files needing edits by their respective libraries.
 
@@ -186,6 +186,11 @@ def classify_files(libraries: List[Path], exclude_files: Set[str], exclude_patte
     Returns:
         Dict[str, List[str]]: A dictionary mapping library names to lists of file paths.
     """
+    if exclude_files is None:
+        exclude_files = {"__init__.py", "__main__.py", "conftest.py", "setup.py", "setup.cfg", "requirements.txt", "requirements.extra.txt", "README.md"}
+    if exclude_patterns is None:
+        exclude_patterns = {"*.egg-info", "build", "dist", "__pycache__", "venv", ".venv", "env", ".env"}
+        
     classification = defaultdict(list)
 
     for lib in libraries:
@@ -237,3 +242,38 @@ def display_results(classification: Dict[str, List[str]]) -> None:
             padding=(1, 2)
         )
         console.print(panel)
+
+def parse_functions(file_path):
+    """Parse a Python file to extract function definitions."""
+    try:
+        with file_path.open('r', encoding='utf-8') as f:
+            file_content = f.read()
+        tree = ast.parse(file_content, filename=str(file_path))
+        functions = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                functions.append(node.name)
+        return functions
+    except Exception as e:
+        console.print(f"[red]Failed to parse file {file_path}: {e}[/red]")
+        return []
+    
+# Generate dependency graph
+def generate_dependency_graph(libraries, file_classification):
+    """Generate a dependency graph of functions to implement."""
+    functions_to_implement = []
+    for lib in libraries:
+        lib_name = lib.name
+        if lib_name not in file_classification:
+            continue
+        for file_relative_path in file_classification[lib_name]:
+            file_path = lib / file_relative_path
+            functions = parse_functions(file_path)
+            for function in functions:
+                functions_to_implement.append({
+                    'library': lib_name,
+                    'file': file_path,
+                    'function': function,
+                    'dependencies': []  # Simplified for now
+                })
+    return functions_to_implement
