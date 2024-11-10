@@ -221,8 +221,8 @@ def extract_test_cases(file_path: Path) -> Dict[str, Dict[str, List[str]]]:
 
 def classify_tests(
     libraries: List[Path],
-    exclude_files: Set[str]=None,
-    exclude_patterns: Set[str]=None,
+    exclude_files: Set[str],
+    exclude_patterns: Set[str],
 ) -> Dict[str, Dict[str, Dict[str, List[str]]]]:
     """
     Classifies test cases by their respective libraries.
@@ -248,11 +248,7 @@ def classify_tests(
                 },
                 ...
             }
-    """    
-    if exclude_files is None:
-        exclude_files = {"conftest.py", "setup.py", "setup.cfg", "requirements.txt", "requirements.extra.txt", "README.md"}
-    if exclude_patterns is None:
-        exclude_patterns = {"*.egg-info", "build", "dist", "__pycache__", "venv", ".venv", "env", ".env"}
+    """
     classification = defaultdict(lambda: defaultdict(lambda: {"classes": defaultdict(list), "functions": []}))
 
     for lib in libraries:
