@@ -1,7 +1,6 @@
 # main.py
 
 import sys
-import ast
 import subprocess
 from pathlib import Path
 from collections import defaultdict
@@ -19,6 +18,9 @@ from extract_tests import (
 from identify_files_to_implement import (
     classify_files,
     display_results as display_file_results,
+    get_functions_needing_editing,
+    detect_circular_imports,
+    refactor_imports,
 )
 from rich.console import Console
 from rich.panel import Panel
@@ -45,269 +47,6 @@ def extract_summary(output: str) -> str:
             summary_line = line.strip()
             break
     return summary_line
-
-
-def parse_failed_tests(summary_line: str) -> int:
-    """
-    Parses the summary line to extract the number of failed tests.
-
-    Args:
-        summary_line (str): The summary line from pytest output.
-
-    Returns:
-        int: The number of failed tests.
-    """
-    match = re.search(r'(\d+) failed', summary_line)
-    if match:
-        return int(match.group(1))
-    else:
-        return 0
-
-
-def main():
-    base_dir = Path('.').resolve()
-
-    # Step 0: Initialize Git repository and make initial commit
-    console.print("[bold blue]Step 0: Initializing Git repository and capturing baseline[/bold blue]")
-    if not (base_dir / '.git').exists():
-        console.print("[bold cyan]Initializing Git repository...[/bold cyan]")
-        subprocess.run(['git', 'init'], cwd=base_dir)
-        subprocess.run(['git', 'add', '.'], cwd=base_dir)
-        subprocess.run(['git', 'commit', '-m', 'Initial commit'], cwd=base_dir)
-        console.print("[green]Git repository initialized and initial commit made.[/green]")
-    else:
-        console.print("[green]Git repository already initialized.[/green]")
-
-    # Step 1: Extract test cases and files to implement
-    console.print("[bold blue]Step 1: Extracting test cases and files to implement[/bold blue]")
-
-    # Define directories to exclude
-    exclude_dirs = {".venv", "venv", "env", ".env", "site-packages"}
-
-    libraries = find_libraries(base_dir, exclude_dirs=exclude_dirs)
-    if not libraries:
-        console.print("[red]No libraries found.[/red]")
-        sys.exit(1)
-
-    # Extract test cases
-    test_classification = classify_tests(
-        libraries,
-        exclude_files=set([
-            "conftest.py", "setup.py", "setup.cfg", "requirements.txt",
-            "requirements.extra.txt", "README.md"
-        ]),
-        exclude_patterns=set(["*.egg-info", "build", "dist", "__pycache__", "venv", ".venv", "env", ".env"]),
-    )
-
-    # Identify files needing implementation
-    file_classification = classify_files(
-        libraries,
-        exclude_files=set([
-            "__init__.py", "__main__.py", "conftest.py",
-            "setup.py", "setup.cfg", "requirements.txt",
-            "requirements.extra.txt", "README.md"
-        ]),
-        exclude_patterns=set(["*.egg-info", "build", "dist", "__pycache__", "venv", ".venv", "env", ".env"]),
-    )
-
-    # Display results
-    console.print("[bold green]Extracted Test Cases:[/bold green]")
-    display_test_results(test_classification)
-
-    console.print("[bold green]Files Needing Implementation:[/bold green]")
-    display_file_results(file_classification)
-
-    # Step 2: Generate dependency graph (simplified)
-    console.print("[bold blue]Step 2: Generating dependency graph[/bold blue]")
-
-    functions_to_implement = []
-
-    for lib in libraries:
-        lib_name = lib.name
-        if lib_name not in file_classification:
-            continue
-        for file_relative_path in file_classification[lib_name]:
-            file_path = lib / file_relative_path
-            # Parse the file to get function names
-            try:
-                with file_path.open('r', encoding='utf-8') as f:
-                    file_content = f.read()
-                tree = ast.parse(file_content, filename=str(file_path))
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.FunctionDef):
-                        functions_to_implement.append({
-                            'library': lib_name,
-                            'file': file_path,
-                            'function': node.name,
-                            'dependencies': []  # Simplified for now
-                        })
-            except Exception as e:
-                console.print(f"[red]Failed to parse file {file_path}: {e}[/red]")
-                continue
-
-    # Step 3: Determine implementation order
-    console.print("[bold blue]Step 3: Determining implementation order[/bold blue]")
-
-    functions_by_file = defaultdict(list)
-    for func_info in functions_to_implement:
-        functions_by_file[func_info['file']].append(func_info)
-
-    subsets = list(functions_by_file.values())
-
-    # Step 4: Capture initial test results as baseline
-    console.print("[bold blue]Step 4: Capturing initial test results as baseline[/bold blue]")
-    baseline_failed_tests = {}
-    for lib in libraries:
-        lib_name = lib.name
-        library_path = lib
-        console.print(f"[bold cyan]Running initial tests for library: {lib_name}[/bold cyan]")
-        summary_line = run_all_tests(library_path)
-        failed_tests = parse_failed_tests(summary_line)
-        baseline_failed_tests[lib_name] = failed_tests
-        console.print(f"[green]Initial failed tests for {lib_name}: {failed_tests}[/green]")
-
-    # Step 5: Iteratively implement functions using Aider
-    console.print("[bold blue]Step 5: Iteratively implementing functions using Aider[/bold blue]")
-
-    subset_count = len(subsets)
-    for subset_index, subset in enumerate(subsets):
-        lib_name = subset[0]['library']
-        library_path = next(lib for lib in libraries if lib.name == lib_name)
-        console.print(f"[bold yellow]Processing subset {subset_index + 1}/{subset_count} for library '{lib_name}'[/bold yellow]")
-
-        retry_count = 0
-        max_retries = 3
-        success = False
-
-        # Determine the test identifiers to run for this subset
-        source_files = set(func_info['file'] for func_info in subset)
-        test_identifiers_to_run = []
-
-        for source_file in source_files:
-            # Map source file to test file
-            source_filename = source_file.name
-            test_filename = 'test_' + source_filename
-            test_file_path = library_path / 'tests' / test_filename
-            if test_file_path.exists():
-                # Extract test functions within classes and standalone functions
-                try:
-                    with test_file_path.open('r', encoding='utf-8') as f:
-                        test_content = f.read()
-                    test_tree = ast.parse(test_content, filename=str(test_file_path))
-                except Exception as e:
-                    console.print(f"[red]Failed to parse test file {test_file_path}: {e}[/red]")
-                    continue
-
-                for node in ast.walk(test_tree):
-                    if isinstance(node, ast.ClassDef):
-                        class_name = node.name
-                        for child in node.body:
-                            if isinstance(child, ast.FunctionDef) and child.name.startswith('test_'):
-                                test_identifier = f"{test_file_path.relative_to(library_path)}::{class_name}::{child.name}"
-                                test_identifiers_to_run.append(test_identifier)
-                    elif isinstance(node, ast.FunctionDef):
-                        if node.name.startswith('test_'):
-                            test_identifier = f"{test_file_path.relative_to(library_path)}::{node.name}"
-                            test_identifiers_to_run.append(test_identifier)
-
-        if not test_identifiers_to_run:
-            console.print(f"[yellow]No tests found for subset {subset_index + 1}. Skipping test execution.[/yellow]")
-            success = True
-            continue
-
-        while retry_count < max_retries and not success:
-            console.print(f"Attempt {retry_count + 1} to implement functions in subset {subset_index + 1}")
-            functions_in_subset = [func_info['function'] for func_info in subset]
-            prompt = f"Implement the following functions: {', '.join(functions_in_subset)}"
-            console.print(f"[bold cyan]Prompt to Aider:[/bold cyan] {prompt}")
-
-            # Prepare the list of files
-            files_in_subset = set(func_info['file'] for func_info in subset)
-            # Convert files to paths relative to the library_path
-            file_paths = [str(file_path.relative_to(library_path)) for file_path in files_in_subset]
-
-            # Construct the Aider command
-            cmd = ["aider"]
-            for file_path in file_paths:
-                cmd.extend(["--file", file_path])
-            cmd.extend(["--message", prompt])
-
-            # Get the current Git commit hash
-            result = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=base_dir, capture_output=True, text=True)
-            if result.returncode == 0:
-                previous_commit_hash = result.stdout.strip()
-            else:
-                console.print("[red]Failed to get current Git commit hash.[/red]")
-                previous_commit_hash = None
-
-            # Run Aider via subprocess with automatic "yes" answers
-            console.print(f"[bold cyan]Running Aider with command:[/bold cyan] {' '.join(cmd)}")
-            try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=library_path,
-                    capture_output=True,
-                    text=True,
-                    input='y\ny\n',  # Automatically answer "yes" to prompts
-                    env=os.environ  # Pass the current environment variables
-                )
-                # Print the output from Aider
-                console.print(result.stdout)
-                console.print(result.stderr)
-
-                # Check if Aider exited successfully
-                if result.returncode != 0:
-                    console.print(f"[red]Aider exited with error code {result.returncode}[/red]")
-                    # Decide whether to retry or not
-                    retry_count += 1
-                    continue
-
-            except Exception as e:
-                console.print(f"[red]Error running Aider: {e}[/red]")
-                retry_count += 1
-                continue
-
-            # After code generation, run all tests in the library
-            console.print(f"[bold magenta]Running all tests in library: {lib_name}[/bold magenta]")
-            summary_line = run_all_tests(library_path)
-            current_failed_tests = parse_failed_tests(summary_line)
-            console.print(f"[green]Current failed tests for {lib_name}: {current_failed_tests}[/green]")
-
-            # Compare with baseline
-            if current_failed_tests < baseline_failed_tests[lib_name]:
-                console.print(f"[green]Performance improved! Failed tests reduced from {baseline_failed_tests[lib_name]} to {current_failed_tests}[/green]")
-                # Commit the changes
-                subprocess.run(['git', 'add', '.'], cwd=base_dir)
-                commit_message = f"Implemented functions in subset {subset_index + 1}"
-                subprocess.run(['git', 'commit', '-m', commit_message], cwd=base_dir)
-                console.print(f"[green]Changes committed with message: '{commit_message}'[/green]")
-                # Update baseline
-                baseline_failed_tests[lib_name] = current_failed_tests
-                success = True
-            else:
-                console.print(f"[red]No performance improvement. Reverting changes...[/red]")
-                if previous_commit_hash:
-                    subprocess.run(['git', 'reset', '--hard', previous_commit_hash], cwd=base_dir)
-                    console.print(f"[yellow]Reverted to previous commit: {previous_commit_hash}[/yellow]")
-                else:
-                    console.print(f"[red]Could not revert changes due to missing commit hash.[/red]")
-                retry_count += 1
-
-        if not success:
-            console.print(f"[red]Failed to implement functions in subset {subset_index + 1} after {max_retries} attempts[/red]")
-            # Proceed to next subset
-
-    # Final Step: Running all test files to evaluate overall performance
-    console.print("[bold blue]Final Step: Running all test files to evaluate overall performance[/bold blue]")
-    for lib in libraries:
-        lib_name = lib.name
-        library_path = lib
-        console.print(f"[bold magenta]Running all tests in library: {lib_name}[/bold magenta]")
-        summary_line = run_all_tests(library_path)
-        current_failed_tests = parse_failed_tests(summary_line)
-        console.print(f"[green]Final failed tests for {lib_name}: {current_failed_tests}[/green]")
-
-    console.print("[bold green]Process completed. All subsets processed.[/bold green]")
 
 
 def run_test(test_identifier: str, library_path: Path) -> bool:
@@ -348,7 +87,7 @@ def run_test(test_identifier: str, library_path: Path) -> bool:
         return False
 
 
-def run_all_tests(library_path: Path) -> str:
+def run_all_tests(library_path: Path) -> bool:
     """
     Runs all tests in the library using pytest and extracts the summary line.
 
@@ -356,7 +95,7 @@ def run_all_tests(library_path: Path) -> str:
         library_path (Path): The path to the library directory.
 
     Returns:
-        str: The summary line from pytest output.
+        bool: True if all tests passed, False otherwise.
     """
     try:
         # Run all tests using subprocess with minimal output
@@ -374,11 +113,184 @@ def run_all_tests(library_path: Path) -> str:
         else:
             console.print("[red]No summary found for the overall tests.[/red]")
 
-        return summary
+        if result.returncode == 0:
+            return True
+        else:
+            return False
 
     except Exception as e:
         console.print(f"[red]Error running all tests in {library_path}: {e}[/red]")
-        return ""
+        return False
+
+
+def main():
+    base_dir = Path('.').resolve()
+
+    # Step 1: Extract test cases and files to implement
+    console.print("[bold blue]Step 1: Extracting test cases and files to implement[/bold blue]")
+
+    # Define directories to exclude
+    exclude_dirs = {".venv", "venv", "env", ".env", "site-packages"}
+
+    libraries = find_libraries(base_dir, recursive=True)
+    if not libraries:
+        console.print("[red]No libraries found.[/red]")
+        sys.exit(1)
+
+    # Extract test cases
+    test_classification = classify_tests(
+        libraries,
+        exclude_files=set([
+            "conftest.py", "setup.py", "setup.cfg", "requirements.txt",
+            "requirements.extra.txt", "README.md"
+        ]),
+        exclude_patterns=set(["*.egg-info", "build", "dist", "__pycache__", "venv", ".venv", "env", ".env"]),
+    )
+
+    # Identify files needing implementation
+    file_classification = classify_files(
+        libraries,
+        exclude_files=set([
+            "__init__.py", "__main__.py", "conftest.py",
+            "setup.py", "setup.cfg", "requirements.txt",
+            "requirements.extra.txt", "README.md"
+        ]),
+        exclude_patterns=set(["*.egg-info", "build", "dist", "__pycache__", "venv", ".venv", "env", ".env"]),
+    )
+
+    # Display results
+    console.print("[bold green]Extracted Test Cases:[/bold green]")
+    display_test_results(test_classification)
+
+    console.print("[bold green]Files Needing Implementation:[/bold green]")
+    display_file_results(file_classification)
+
+    # Step 2: Detect and Refactor Circular Imports
+    console.print("[bold blue]Step 2: Detecting and Refactoring Circular Imports[/bold blue]")
+
+    for lib in libraries:
+        lib_name = lib.name
+        for file_relative_path in file_classification.get(lib_name, {}):
+            file_path = lib / file_relative_path
+            if detect_circular_imports(file_path):
+                console.print(f"[yellow]Circular import detected in {file_path}. Refactoring imports...[/yellow]")
+                refactor_imports(file_path)
+                console.print(f"[green]Refactored imports in {file_path} to use local imports.[/green]")
+
+    # Step 3: Generate dependency graph (simplified)
+    console.print("[bold blue]Step 3: Generating dependency graph[/bold blue]")
+
+    functions_to_implement = []
+
+    for lib in libraries:
+        lib_name = lib.name
+        if lib_name not in file_classification:
+            continue
+        for file_relative_path in file_classification[lib_name]:
+            file_path = lib / file_relative_path
+            # Extract functions needing implementation using the imported function
+            try:
+                functions = get_functions_needing_editing(file_path)
+                for func_name in functions:
+                    functions_to_implement.append({
+                        'library': lib_name,
+                        'file': file_path,
+                        'function': func_name,
+                        'dependencies': []  # Simplified for now
+                    })
+            except Exception as e:
+                console.print(f"[red]Failed to parse file {file_path}: {e}[/red]")
+                continue
+
+    # Step 4: Group functions by file for processing
+    console.print("[bold blue]Step 4: Grouping functions by file for processing[/bold blue]")
+
+    # Create a new list of subsets based on file order
+    functions_by_file = defaultdict(list)
+
+    for func_info in functions_to_implement:
+        file_path = func_info['file']
+        functions_by_file[file_path].append(func_info)
+
+    # Convert to a list of subsets, where each subset is a list of functions from a single file
+    subsets = list(functions_by_file.values())
+
+    # New: Display the subsets based on file order
+    console.print("[bold green]Processing functions grouped by file order:[/bold green]")
+    for index, subset in enumerate(subsets):
+        file_path = subset[0]['file']
+        function_names = [func_info['function'] for func_info in subset]
+        console.print(f"[bold yellow]Subset {index + 1}: {file_path.relative_to(base_dir)}[/bold yellow] - {', '.join(function_names)}")
+
+    # Step 5: Iteratively implement functions using Aider (file-by-file approach)
+    console.print("[bold blue]Step 5: Iteratively implementing functions using Aider (file-by-file approach)[/bold blue]")
+
+    subset_count = len(subsets)
+    for subset_index, subset in enumerate(subsets):
+        lib_name = subset[0]['library']
+        library_path = next(lib for lib in libraries if lib.name == lib_name)
+        file_path = subset[0]['file']
+
+        # Display the functions in the current file subset
+        function_names = [func_info['function'] for func_info in subset]
+        console.print(f"[bold yellow]Processing file {file_path.relative_to(base_dir)} (Subset {subset_index + 1}/{subset_count})[/bold yellow]")
+        console.print(f"[bold cyan]Functions to implement:[/bold cyan] {', '.join(function_names)}")
+
+        retry_count = 0
+        max_retries = 2
+        success = False
+
+        while retry_count < max_retries and not success:
+            # Prepare the prompt for Aider
+            prompt = f"Implement the following functions in {file_path.relative_to(library_path)}: {', '.join(function_names)}"
+            console.print(f"[bold cyan]Prompt to Aider:[/bold cyan] {prompt}")
+
+            # Construct the Aider command
+            cmd = ["aider", "--file", str(file_path.relative_to(library_path)), "--message", prompt]
+
+            # Redirect Aider output to a log file and only show a summary message
+            log_file = base_dir / "aider_output.log"
+            console.print(f"[bold cyan]Running Aider with command:[/bold cyan] {' '.join(cmd)}")
+
+            try:
+                with open(log_file, "w") as log:
+                    result = subprocess.run(
+                        cmd,
+                        cwd=library_path,
+                        stdout=log,
+                        stderr=log,
+                        text=True,
+                        input='y\ny\n',  # Automatically answer "yes" to prompts
+                        env=os.environ  # Pass the current environment variables
+                    )
+
+                # Display concise summary based on Aider's return code
+                if result.returncode == 0:
+                    console.print("[green]Aider completed the task successfully.[/green]")
+                    success = True
+                else:
+                    console.print("[red]Aider encountered an error. Check aider_output.log for details.[/red]")
+                    retry_count += 1
+
+            except Exception as e:
+                console.print(f"[red]Error running Aider: {e}[/red]")
+                retry_count += 1
+                continue
+
+            if not success:
+                console.print(f"[red]Failed to implement functions in {file_path.relative_to(library_path)} after {max_retries} attempts[/red]")
+            # Proceed to next subset
+
+    # Final Step: Running all test files to evaluate overall performance
+    console.print("[bold blue]Step 6: Running all test files to evaluate overall performance[/bold blue]")
+
+    for lib in libraries:
+        lib_name = lib.name
+        library_path = lib
+        console.print(f"[bold magenta]Running all tests in library: {lib_name}[/bold magenta]")
+        all_tests_passed = run_all_tests(library_path)
+
+    console.print("[bold green]Process completed. Running the overall performance tests.[/bold green]")
 
 
 if __name__ == "__main__":
