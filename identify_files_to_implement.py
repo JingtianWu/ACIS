@@ -1,7 +1,5 @@
 # identify_files_to_implement.py
 
-import os
-import sys
 import ast
 import fnmatch
 from pathlib import Path
@@ -59,7 +57,8 @@ def find_libraries(base_dir: Path, recursive: bool = True) -> List[Path]:
 
 def collect_python_files(library_dir: Path, exclude_files: Set[str], exclude_patterns: Set[str]) -> List[Path]:
     """
-    Recursively collects Python files from the library directory, excluding test files and special files.
+    Recursively collects Python files from the library directory, including test files,
+    and excluding specified files and patterns.
 
     Args:
         library_dir (Path): The library directory to scan.
@@ -75,9 +74,6 @@ def collect_python_files(library_dir: Path, exclude_files: Set[str], exclude_pat
     for file_path in library_dir.rglob("*.py"):
         # Exclude special files
         if file_path.name in exclude_files:
-            continue
-        # Exclude files in any 'tests/' subdirectories
-        if "tests" in file_path.parts:
             continue
         # Exclude files in excluded directories
         if any(part in excluded_dirs for part in file_path.parts):

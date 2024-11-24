@@ -1,23 +1,16 @@
 # extract_tests.py
 
-import os
-import sys
 import ast
 import fnmatch
 from pathlib import Path
 from typing import List, Dict, Set
 from collections import defaultdict
 
-try:
-    from rich.console import Console
-    from rich.table import Table
-    from rich import box
-    from rich.panel import Panel
-    from rich.align import Align
-except ImportError:
-    print("The 'rich' library is required for this script to run.")
-    print("Install it using 'pip install rich' and try again.")
-    sys.exit(1)
+from rich.console import Console
+from rich.table import Table
+from rich import box
+from rich.panel import Panel
+from rich.align import Align
 
 console = Console()
 
@@ -70,9 +63,7 @@ def find_libraries(base_dir: Path, recursive: bool = True, exclude_dirs: Set[str
     return libraries
 
 
-def collect_test_files(
-    library_dir: Path, exclude_files: Set[str], exclude_patterns: Set[str]
-) -> List[Path]:
+def collect_test_files(library_dir: Path, exclude_files: Set[str], exclude_patterns: Set[str]) -> List[Path]:
     """
     Recursively collects Python test files from the library directory, excluding specified files and patterns.
 

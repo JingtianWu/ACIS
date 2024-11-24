@@ -22,6 +22,9 @@ from identify_files_to_implement import (
     detect_circular_imports,
     refactor_imports,
 )
+from topological_sort import (
+    topological_sort_based_on_dependencies,
+)
 from rich.console import Console
 from rich.panel import Panel
 from rich.align import Align
@@ -177,43 +180,57 @@ def main():
                 refactor_imports(file_path)
                 console.print(f"[green]Refactored imports in {file_path} to use local imports.[/green]")
 
-    # Step 3: Generate dependency graph (simplified)
-    console.print("[bold blue]Step 3: Generating dependency graph[/bold blue]")
+    # Step 3: Perform Topological Sort to Order Files Based on Dependencies
+    console.print("[bold blue]Step 3: Ordering Files Based on Dependencies using Topological Sort[/bold blue]")
 
-    functions_to_implement = []
-
+    # Collect all files needing implementation across all libraries
+    all_files_to_implement = []
     for lib in libraries:
         lib_name = lib.name
         if lib_name not in file_classification:
             continue
         for file_relative_path in file_classification[lib_name]:
             file_path = lib / file_relative_path
-            # Extract functions needing implementation using the imported function
-            try:
-                functions = get_functions_needing_editing(file_path)
-                for func_name in functions:
-                    functions_to_implement.append({
-                        'library': lib_name,
-                        'file': file_path,
-                        'function': func_name,
-                        'dependencies': []  # Simplified for now
-                    })
-            except Exception as e:
-                console.print(f"[red]Failed to parse file {file_path}: {e}[/red]")
-                continue
+            all_files_to_implement.append(str(file_path))
 
-    # Step 4: Group functions by file for processing
-    console.print("[bold blue]Step 4: Grouping functions by file for processing[/bold blue]")
+    # Perform topological sort
+    sorted_files, dependencies = topological_sort_based_on_dependencies(all_files_to_implement)
+    console.print(f"[bold blue]Topological Sort Result: {sorted_files}[/bold blue]")
 
-    # Create a new list of subsets based on file order
-    functions_by_file = defaultdict(list)
+    # Step 4: Group functions by file in sorted order for processing
+    console.print("[bold blue]Step 4: Grouping functions by file in sorted order[/bold blue]")
 
-    for func_info in functions_to_implement:
-        file_path = func_info['file']
-        functions_by_file[file_path].append(func_info)
+    # Create a mapping from file path to functions needing implementation
+    functions_by_file: Dict[str, List[str]] = defaultdict(list)
+
+    for lib in libraries:
+        lib_name = lib.name
+        if lib_name not in file_classification:
+            continue
+        for file_relative_path, functions in file_classification[lib_name].items():
+            file_path = lib / file_relative_path
+            functions_by_file[str(file_path)].extend(functions)
+
+    # Order the files based on the topological sort
+    ordered_files = [file for file in sorted_files if file in functions_by_file]
 
     # Convert to a list of subsets, where each subset is a list of functions from a single file
-    subsets = list(functions_by_file.values())
+    subsets: List[List[Dict]] = []
+    for file in ordered_files:
+        # Determine which library the file belongs to
+        lib_name = next(
+            (lib.name for lib in libraries if (lib / Path(file).relative_to(lib)).exists()), None
+        )
+        if lib_name is None:
+            console.print(f"[red]Warning: Could not determine library for file {file}.[/red]")
+            continue
+        subset = [{
+            'library': lib_name,
+            'file': Path(file),
+            'function': func,
+            'dependencies': dependencies.get(file, set())
+        } for func in functions_by_file[file]]
+        subsets.append(subset)
 
     # New: Display the subsets based on file order
     console.print("[bold green]Processing functions grouped by file order:[/bold green]")
