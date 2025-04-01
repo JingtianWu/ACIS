@@ -1,4 +1,4 @@
-# SKY - Autonomous Code Implementation System
+# ACIS - Autonomous Code Implementation System
 
 This project automates the incremental implementation of unimplemented functions in Python libraries using a test-driven approach.
 
